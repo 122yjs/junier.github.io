@@ -33,8 +33,15 @@ jobs:
           cache-dependency-path: gongju-moon-observation/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm test
-      - name: Preserve production build output
+      - name: Verify existing application build and behavior
+        run: npm test
+      - name: Build direct Cloudflare target
+        env:
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: wrangler.cloudflare.jsonc
+        run: npm run build
+      - name: Verify direct Cloudflare deployment contract
+        run: node --test tests/cloudflare-deploy.test.mjs
+      - name: Preserve verified Worker build output
         uses: actions/upload-artifact@v4
         with:
           name: gongju-moon-observation-build

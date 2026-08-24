@@ -49,4 +49,13 @@ if [[ "$#" -eq 0 ]]; then
 fi
 
 cd "${project_root}"
+
+# GitHub's contents API may preserve shell files without an executable bit.
+# Run such scripts explicitly through bash while leaving normal commands intact.
+if [[ "${1}" == *.sh && -f "${1}" && ! -x "${1}" ]]; then
+  script="${1}"
+  shift
+  set -- bash "${script}" "$@"
+fi
+
 exec "$@"

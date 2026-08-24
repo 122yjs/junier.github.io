@@ -1,22 +1,22 @@
-import { getAdminSession } from "../../../../../lib/auth";
+import { getTeacherSession } from "../../../../../lib/auth";
+import {
+  assertObservationBelongsToClass,
+  deleteDriveFile,
+  getDriveFile,
+  getTeacherAccessToken,
+  googleDriveUserMessage,
+  parseObservationMetadata,
+  updateDriveFile,
+} from "../../../../../lib/google-drive";
 import { assertSameOrigin, errorResponse, HttpError, json } from "../../../../../lib/http";
-import { getClassId, getEnv } from "../../../../../lib/runtime";
+import {
+  deleteReceiptByDriveFileId,
+  getReceipt,
+  getTeacherWorkspace,
+  updateReceiptStatus,
+} from "../../../../../lib/tenants";
 
-interface ManagedRow {
-  image_key: string;
-  status: string;
-}
-
-async function getManagedObservation(id: string) {
-  const runtime = getEnv();
-  const row = await runtime.DB.prepare(
-    "SELECT image_key, status FROM observations WHERE id = ? AND class_id = ? LIMIT 1",
-  )
-    .bind(id, getClassId(runtime))
-    .first<ManagedRow>();
-  if (!row) throw new HttpError(404, "관찰 기록을 찾을 수 없습니다.");
-  return { runtime, row };
-}
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function PATCH(
   request: Request,
@@ -24,21 +24,53 @@ export async function PATCH(
 ) {
   try {
     assertSameOrigin(request);
-    if (!(await getAdminSession(request))) throw new HttpError(401, "교사 로그인이 필요합니다.");
-    const { id } = await context.params;
+    const session = await getTeacherSession(request);
+    if (!session) throw new HttpError(401, "교사 로그인 후 이용해 주세요.");
+    const { id: requestId } = await context.params;
+    if (!REQUEST_ID.test(requestId)) throw new HttpError(404, "관찰 기록을 찾을 수 없습니다.");
     const payload = (await request.json()) as { status?: unknown };
     if (payload.status !== "visible" && payload.status !== "hidden") {
-      throw new HttpError(400, "공개 상태 값이 올바르지 않습니다.");
+      throw new HttpError(400, "공개 상태가 올바르지 않습니다.");
     }
-    const { runtime } = await getManagedObservation(id);
-    await runtime.DB.prepare(
-      "UPDATE observations SET status = ? WHERE id = ? AND class_id = ?",
-    )
-      .bind(payload.status, id, getClassId(runtime))
-      .run();
-    return json({ ok: true, status: payload.status });
+
+    const [workspace, receipt] = await Promise.all([
+      getTeacherWorkspace(session.teacherId),
+      getReceipt(requestId),
+    ]);
+    if (!workspace || !receipt || receipt.classId !== workspace.classRecord.id) {
+      throw new HttpError(404, "관찰 기록을 찾을 수 없습니다.");
+    }
+    const accessToken = await getTeacherAccessToken(request, workspace.teacher);
+    const file = await getDriveFile(accessToken, receipt.driveFileId);
+    assertObservationBelongsToClass(file, workspace.classRecord.driveFolderId, workspace.classRecord.id);
+    const metadata = parseObservationMetadata(file);
+    if (!metadata || metadata.requestId !== requestId) {
+      throw new HttpError(404, "관찰 기록 정보를 읽을 수 없습니다.");
+    }
+    if (metadata.status === payload.status) return json({ ok: true, status: payload.status });
+
+    const nextMetadata = { ...metadata, status: payload.status };
+    await updateDriveFile(accessToken, receipt.driveFileId, {
+      description: JSON.stringify(nextMetadata),
+      appProperties: { ...file.appProperties, status: payload.status },
+    });
+    try {
+      await updateReceiptStatus(workspace.classRecord.id, receipt.driveFileId, payload.status);
+    } catch (error) {
+      await updateDriveFile(accessToken, receipt.driveFileId, {
+        description: JSON.stringify(metadata),
+        appProperties: { ...file.appProperties, status: metadata.status },
+      }).catch((rollbackError) => console.warn("Drive status rollback failed", rollbackError));
+      throw error;
+    }
+    return json({
+      ok: true,
+      status: payload.status,
+      message: payload.status === "visible" ? "학생 갤러리에 다시 공개했습니다." : "학생 갤러리에서 숨겼습니다.",
+    });
   } catch (error) {
-    return errorResponse(error);
+    const driveMessage = googleDriveUserMessage(error);
+    return driveMessage ? json({ message: driveMessage }, { status: 503 }) : errorResponse(error);
   }
 }
 
@@ -48,21 +80,27 @@ export async function DELETE(
 ) {
   try {
     assertSameOrigin(request);
-    if (!(await getAdminSession(request))) throw new HttpError(401, "교사 로그인이 필요합니다.");
-    const { id } = await context.params;
-    const { runtime, row } = await getManagedObservation(id);
-
-    await runtime.DB.prepare(
-      "UPDATE observations SET status = 'hidden' WHERE id = ? AND class_id = ?",
-    )
-      .bind(id, getClassId(runtime))
-      .run();
-    await runtime.BUCKET.delete(row.image_key);
-    await runtime.DB.prepare("DELETE FROM observations WHERE id = ? AND class_id = ?")
-      .bind(id, getClassId(runtime))
-      .run();
-    return json({ ok: true });
+    const session = await getTeacherSession(request);
+    if (!session) throw new HttpError(401, "교사 로그인 후 이용해 주세요.");
+    const { id: requestId } = await context.params;
+    if (!REQUEST_ID.test(requestId)) throw new HttpError(404, "관찰 기록을 찾을 수 없습니다.");
+    const [workspace, receipt] = await Promise.all([
+      getTeacherWorkspace(session.teacherId),
+      getReceipt(requestId),
+    ]);
+    if (!workspace || !receipt || receipt.classId !== workspace.classRecord.id) {
+      throw new HttpError(404, "관찰 기록을 찾을 수 없습니다.");
+    }
+    const accessToken = await getTeacherAccessToken(request, workspace.teacher);
+    const file = await getDriveFile(accessToken, receipt.driveFileId);
+    assertObservationBelongsToClass(file, workspace.classRecord.driveFolderId, workspace.classRecord.id);
+    await deleteDriveFile(accessToken, receipt.driveFileId);
+    await deleteReceiptByDriveFileId(workspace.classRecord.id, receipt.driveFileId).catch((cleanupError) => {
+      console.warn("Submission receipt cleanup failed", cleanupError);
+    });
+    return json({ ok: true, message: "Google Drive에서 관찰 기록을 완전히 삭제했습니다." });
   } catch (error) {
-    return errorResponse(error);
+    const driveMessage = googleDriveUserMessage(error);
+    return driveMessage ? json({ message: driveMessage }, { status: 503 }) : errorResponse(error);
   }
 }

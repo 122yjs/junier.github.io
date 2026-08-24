@@ -31,3 +31,5 @@ jobs:
           git add -A
           git commit -m "feat: add central Google Drive OAuth storage"
           git push origin HEAD:feat/google-drive-oauth-central
+
+# bootstrap-trigger: 2

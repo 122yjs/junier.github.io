@@ -38,11 +38,13 @@ test("requests only drive.file among Google Drive scopes", async () => {
   const drive = await read("lib/google-drive.ts");
   const auth = await read("lib/auth.ts");
   assert.match(drive, /https:\/\/www\.googleapis\.com\/auth\/drive\.file/);
-  assert.match(drive, /\["openid", "email", DRIVE_FILE_SCOPE\]/);
+  const requestedScope = drive.match(/url\.searchParams\.set\("scope", ([^\n]+)\);/)?.[1];
+  assert.equal(requestedScope, '["openid", "email", DRIVE_FILE_SCOPE].join(" ")');
+  assert.equal((drive.match(/https:\/\/www\.googleapis\.com\/auth\/drive\.file/g) || []).length, 1);
+  assert.match(drive, /unexpectedDriveScope/);
+  assert.match(drive, /value !== DRIVE_FILE_SCOPE/);
   assert.match(drive, /access_type", "offline"/);
   assert.match(drive, /prompt", "consent"/);
-  assert.doesNotMatch(drive, /auth\/drive["']/);
-  assert.doesNotMatch(drive, /auth\/drive\.readonly/);
   assert.match(auth, /STUDENT_SESSION_MAX_AGE = 60 \* 24 \* 60 \* 60/);
   assert.match(auth, /moon_teacher_session/);
   assert.match(auth, /moon_google_oauth_state/);

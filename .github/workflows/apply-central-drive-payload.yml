@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode .central-drive-payload.tar.gz.b64 > /tmp/central-drive-payload.tar.gz
+          cp .central-drive-payload.tar.gz.b64 /tmp/central-drive-payload.tar.gz
           tar -xzf /tmp/central-drive-payload.tar.gz -C .
           mapfile -t remove_paths < .central-drive-remove-list
           rm -f "${remove_paths[@]}" .central-drive-remove-list /tmp/central-drive-payload.tar.gz

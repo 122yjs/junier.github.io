@@ -34,3 +34,10 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+      - name: Preserve production build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: gongju-moon-observation-build
+          path: gongju-moon-observation/dist
+          if-no-files-found: error
+          retention-days: 7

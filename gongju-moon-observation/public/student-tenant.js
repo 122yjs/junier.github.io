@@ -41,7 +41,7 @@
           ? `✓ ${classLabel} 수업 참여가 확인되었습니다. 사진 제출과 우리 반 갤러리를 이용할 수 있어요.`
           : `✓ ${classLabel} 수업 참여가 확인되었습니다. 사진 제출은 가능하며, 우리 반 갤러리는 선생님이 닫아 두었습니다.`;
       }
-    } catch (_) {
+    } catch {
       // The original page already handles an unavailable session endpoint.
     }
   }

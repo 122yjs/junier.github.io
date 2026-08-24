@@ -7,6 +7,13 @@ on:
     paths:
       - .central-drive-payload.tar.gz.b64
       - .github/workflows/apply-central-drive-payload.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .central-drive-payload.tar.gz.b64
+      - .github/workflows/apply-central-drive-payload.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feat/google-drive-oauth-central
 
       - name: Expand reviewed source payload
         shell: bash
@@ -31,5 +40,3 @@ jobs:
           git add -A
           git commit -m "feat: add central Google Drive OAuth storage"
           git push origin HEAD:feat/google-drive-oauth-central
-
-# bootstrap-trigger: 2

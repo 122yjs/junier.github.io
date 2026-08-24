@@ -1,85 +1,131 @@
-import { getClassId, getEnv } from "./runtime";
+import { randomToken, signPayload, verifyPayload } from "./crypto";
+import { getEnv } from "./runtime";
 
 const STUDENT_COOKIE = "moon_class_session";
-const ADMIN_COOKIE = "moon_admin_session";
-const STUDENT_SESSION_MAX_AGE = 60 * 24 * 60 * 60;
-const encoder = new TextEncoder();
+const TEACHER_COOKIE = "moon_teacher_session";
+const OAUTH_STATE_COOKIE = "moon_google_oauth_state";
+export const STUDENT_SESSION_MAX_AGE = 60 * 24 * 60 * 60;
+const TEACHER_SESSION_MAX_AGE = 12 * 60 * 60;
+const OAUTH_STATE_MAX_AGE = 10 * 60;
 
-export interface SessionPayload {
-  role: "student" | "admin";
+export interface StudentSession {
+  role: "student";
   classId: string;
   sid: string;
   exp: number;
 }
 
-function toBase64Url(bytes: Uint8Array) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+export interface TeacherSession {
+  role: "teacher";
+  teacherId: string;
+  sid: string;
+  exp: number;
 }
 
-function fromBase64Url(value: string) {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+interface OAuthStatePayload {
+  state: string;
+  returnTo: string;
+  exp: number;
 }
 
-async function hmac(value: string) {
-  const runtime = getEnv();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(runtime.SESSION_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
+export async function createStudentCookie(classId: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: StudentSession = {
+    role: "student",
+    classId,
+    sid: crypto.randomUUID(),
+    exp: now + STUDENT_SESSION_MAX_AGE,
+  };
+  return cookie(STUDENT_COOKIE, await signPayload(payload, getEnv().SESSION_SECRET), STUDENT_SESSION_MAX_AGE);
+}
+
+export async function createTeacherCookie(teacherId: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: TeacherSession = {
+    role: "teacher",
+    teacherId,
+    sid: crypto.randomUUID(),
+    exp: now + TEACHER_SESSION_MAX_AGE,
+  };
+  return cookie(TEACHER_COOKIE, await signPayload(payload, getEnv().SESSION_SECRET), TEACHER_SESSION_MAX_AGE);
+}
+
+export async function createOAuthState(returnTo = "/admin") {
+  const state = randomToken(24);
+  const payload: OAuthStatePayload = {
+    state,
+    returnTo: safeRelativeReturnPath(returnTo),
+    exp: Math.floor(Date.now() / 1000) + OAUTH_STATE_MAX_AGE,
+  };
+  return {
+    state,
+    setCookie: cookie(
+      OAUTH_STATE_COOKIE,
+      await signPayload(payload, getEnv().SESSION_SECRET),
+      OAUTH_STATE_MAX_AGE,
+    ),
+  };
+}
+
+export async function consumeOAuthState(request: Request, state: string | null) {
+  const payload = await verifyPayload<OAuthStatePayload>(
+    readCookie(request, OAUTH_STATE_COOKIE),
+    getEnv().SESSION_SECRET,
   );
-  return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
-}
-
-export async function sha256Hex(value: string) {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export async function safeSecretEqual(left: string, right: string) {
-  const [leftHash, rightHash] = await Promise.all([sha256Hex(left), sha256Hex(right)]);
-  let mismatch = leftHash.length ^ rightHash.length;
-  const length = Math.max(leftHash.length, rightHash.length);
-  for (let index = 0; index < length; index += 1) {
-    mismatch |= (leftHash.charCodeAt(index) || 0) ^ (rightHash.charCodeAt(index) || 0);
-  }
-  return mismatch === 0;
-}
-
-async function signSession(payload: SessionPayload) {
-  const encoded = toBase64Url(encoder.encode(JSON.stringify(payload)));
-  const signature = toBase64Url(await hmac(encoded));
-  return `${encoded}.${signature}`;
-}
-
-async function verifySession(value: string | null, role: SessionPayload["role"]) {
-  if (!value) return null;
-  const [encoded, signature, extra] = value.split(".");
-  if (!encoded || !signature || extra) return null;
-  const expected = toBase64Url(await hmac(encoded));
-  if (!(await safeSecretEqual(signature, expected))) return null;
-
-  try {
-    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(encoded))) as SessionPayload;
-    if (
-      payload.role !== role ||
-      payload.classId !== getClassId() ||
-      !payload.sid ||
-      !Number.isFinite(payload.exp) ||
-      payload.exp <= Math.floor(Date.now() / 1000)
-    ) {
-      return null;
-    }
-    return payload;
-  } catch {
+  if (!state || !payload || payload.state !== state || payload.exp <= Math.floor(Date.now() / 1000)) {
     return null;
   }
+  return payload.returnTo;
+}
+
+export async function getStudentSession(request: Request) {
+  const payload = await verifyPayload<StudentSession>(
+    readCookie(request, STUDENT_COOKIE),
+    getEnv().SESSION_SECRET,
+  );
+  if (
+    !payload ||
+    payload.role !== "student" ||
+    !payload.classId ||
+    !payload.sid ||
+    payload.exp <= Math.floor(Date.now() / 1000)
+  ) {
+    return null;
+  }
+  return payload;
+}
+
+export async function getTeacherSession(request: Request) {
+  const payload = await verifyPayload<TeacherSession>(
+    readCookie(request, TEACHER_COOKIE),
+    getEnv().SESSION_SECRET,
+  );
+  if (
+    !payload ||
+    payload.role !== "teacher" ||
+    !payload.teacherId ||
+    !payload.sid ||
+    payload.exp <= Math.floor(Date.now() / 1000)
+  ) {
+    return null;
+  }
+  return payload;
+}
+
+export async function getViewerSession(request: Request) {
+  return (await getTeacherSession(request)) || (await getStudentSession(request));
+}
+
+export function clearStudentCookie() {
+  return cookie(STUDENT_COOKIE, "", 0);
+}
+
+export function clearTeacherCookie() {
+  return cookie(TEACHER_COOKIE, "", 0);
+}
+
+export function clearOAuthStateCookie() {
+  return cookie(OAUTH_STATE_COOKIE, "", 0);
 }
 
 function readCookie(request: Request, name: string) {
@@ -95,44 +141,13 @@ function cookie(name: string, value: string, maxAge: number) {
   return `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
 }
 
-export async function createStudentCookie() {
-  const maxAge = STUDENT_SESSION_MAX_AGE;
-  const value = await signSession({
-    role: "student",
-    classId: getClassId(),
-    sid: crypto.randomUUID(),
-    exp: Math.floor(Date.now() / 1000) + maxAge,
-  });
-  return cookie(STUDENT_COOKIE, value, maxAge);
-}
-
-export async function createAdminCookie() {
-  const maxAge = 12 * 60 * 60;
-  const value = await signSession({
-    role: "admin",
-    classId: getClassId(),
-    sid: crypto.randomUUID(),
-    exp: Math.floor(Date.now() / 1000) + maxAge,
-  });
-  return cookie(ADMIN_COOKIE, value, maxAge);
-}
-
-export function clearStudentCookie() {
-  return cookie(STUDENT_COOKIE, "", 0);
-}
-
-export function clearAdminCookie() {
-  return cookie(ADMIN_COOKIE, "", 0);
-}
-
-export function getStudentSession(request: Request) {
-  return verifySession(readCookie(request, STUDENT_COOKIE), "student");
-}
-
-export function getAdminSession(request: Request) {
-  return verifySession(readCookie(request, ADMIN_COOKIE), "admin");
-}
-
-export async function getViewerSession(request: Request) {
-  return (await getAdminSession(request)) || (await getStudentSession(request));
+function safeRelativeReturnPath(value: string) {
+  if (!value.startsWith("/") || value.startsWith("//")) return "/admin";
+  try {
+    const url = new URL(value, "https://app.local");
+    if (url.origin !== "https://app.local") return "/admin";
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return "/admin";
+  }
 }

@@ -61,6 +61,7 @@ jobs:
       - name: Build and verify direct Cloudflare target
         env:
           CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: wrangler.cloudflare.deploy.json
+          NEXT_PUBLIC_SITE_ORIGIN: https://${{ vars.CLOUDFLARE_CUSTOM_DOMAIN }}
         run: |
           npm run build
           node --test tests/cloudflare-deploy.test.mjs
@@ -79,16 +80,18 @@ jobs:
           await writeFile(process.env.RUNNER_TEMP + "/gongju-worker-secrets.json", JSON.stringify(values));
           NODE
       - name: Deploy Worker and provision D1
-        run: >-
-          npx wrangler deploy
-          --config dist/server/wrangler.json
-          --secrets-file "$RUNNER_TEMP/gongju-worker-secrets.json"
-          --message "${GITHUB_SHA} central drive.file release"
+        shell: bash
+        run: |
+          npx wrangler deploy \
+            --config dist/server/wrangler.json \
+            --secrets-file "$RUNNER_TEMP/gongju-worker-secrets.json" \
+            --message "${GITHUB_SHA} central drive.file release"
       - name: Apply D1 migrations
-        run: >-
-          npx wrangler d1 migrations apply DB
-          --remote
-          --config dist/server/wrangler.json
+        shell: bash
+        run: |
+          npx wrangler d1 migrations apply DB \
+            --remote \
+            --config dist/server/wrangler.json
       - name: Verify production health
         shell: bash
         run: |

@@ -2,6 +2,8 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
+const LEGACY_SITE_ORIGIN = "https://classroom-webapp-2026.znr1.chatgpt.site";
+
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
@@ -35,7 +37,7 @@ const worker = {
       }, allowedWidths);
     } else if (url.pathname === "/" || url.pathname === "/index.html") {
       const asset = await env.ASSETS.fetch(new Request(new URL("/index.html", request.url)));
-      const html = await asset.text();
+      const html = (await asset.text()).replaceAll(LEGACY_SITE_ORIGIN, url.origin);
       const body = html.includes("/student-tenant.js")
         ? html
         : html.replace("</body>", "<script src=\"/student-tenant.js\" defer></script></body>");

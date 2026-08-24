@@ -2,17 +2,28 @@ import {
   clearStudentCookie,
   createStudentCookie,
   getStudentSession,
-  safeSecretEqual,
 } from "../../../lib/auth";
+import { sha256Hex } from "../../../lib/crypto";
 import { assertSameOrigin, errorResponse, HttpError, json } from "../../../lib/http";
-import { getClassLabel, getEnv } from "../../../lib/runtime";
+import { getClassById, getClassByInviteHash } from "../../../lib/tenants";
 
 export async function GET(request: Request) {
   try {
     const session = await getStudentSession(request);
+    if (!session) {
+      return json({ authenticated: false, classLabel: null, galleryEnabled: false });
+    }
+    const classRecord = await getClassById(session.classId);
+    if (!classRecord) {
+      return json(
+        { authenticated: false, classLabel: null, galleryEnabled: false },
+        { headers: { "Set-Cookie": clearStudentCookie() } },
+      );
+    }
     return json({
-      authenticated: Boolean(session),
-      classLabel: session ? getClassLabel() : null,
+      authenticated: true,
+      classLabel: classRecord.label,
+      galleryEnabled: classRecord.galleryEnabled,
     });
   } catch (error) {
     return errorResponse(error);
@@ -26,13 +37,17 @@ export async function POST(request: Request) {
     if (typeof payload.token !== "string" || payload.token.length < 32 || payload.token.length > 256) {
       throw new HttpError(401, "유효하지 않거나 만료된 수업 참여 링크입니다.");
     }
-    if (!(await safeSecretEqual(payload.token, getEnv().CLASS_INVITE_TOKEN))) {
+    const classRecord = await getClassByInviteHash(await sha256Hex(payload.token));
+    if (!classRecord) {
       throw new HttpError(401, "유효하지 않거나 만료된 수업 참여 링크입니다.");
     }
-
     return json(
-      { ok: true, classLabel: getClassLabel() },
-      { headers: { "Set-Cookie": await createStudentCookie() } },
+      {
+        ok: true,
+        classLabel: classRecord.label,
+        galleryEnabled: classRecord.galleryEnabled,
+      },
+      { headers: { "Set-Cookie": await createStudentCookie(classRecord.id) } },
     );
   } catch (error) {
     return errorResponse(error);
